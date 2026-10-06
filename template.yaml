@@ -1,0 +1,408 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: >
+  Simple AWS multi-tier application infrastructure using CloudFormation.
+  Includes networking, EC2 compute, RDS PostgreSQL database, IAM,
+  security groups, CloudWatch monitoring, and RDS backups.
+
+Parameters:
+
+  VpcCIDR:
+    Type: String
+    Default: 10.0.0.0/16
+    Description: CIDR block for the VPC
+
+  PublicSubnetCIDR:
+    Type: String
+    Default: 10.0.1.0/24
+    Description: CIDR block for the public application subnet
+
+  PrivateSubnet1CIDR:
+    Type: String
+    Default: 10.0.10.0/24
+    Description: CIDR block for the first private database subnet
+
+  PrivateSubnet2CIDR:
+    Type: String
+    Default: 10.0.11.0/24
+    Description: CIDR block for the second private database subnet
+
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Existing EC2 key pair name
+
+  DBUsername:
+    Type: String
+    Default: appuser
+    Description: RDS database username
+
+  DBPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    Description: RDS database password
+
+Resources:
+
+  # ---------------------------------------------------------
+  # VPC
+  # ---------------------------------------------------------
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: capstone-vpc
+
+  # ---------------------------------------------------------
+  # Internet Gateway
+  # ---------------------------------------------------------
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: capstone-igw
+
+  AttachInternetGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # ---------------------------------------------------------
+  # Public Subnet
+  # ---------------------------------------------------------
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnetCIDR
+      AvailabilityZone: !Select
+        - 0
+        - !GetAZs ""
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: capstone-public-subnet
+
+  # ---------------------------------------------------------
+  # Private Database Subnets
+  # ---------------------------------------------------------
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnet1CIDR
+      AvailabilityZone: !Select
+        - 0
+        - !GetAZs ""
+      Tags:
+        - Key: Name
+          Value: capstone-private-db-subnet-1
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnet2CIDR
+      AvailabilityZone: !Select
+        - 1
+        - !GetAZs ""
+      Tags:
+        - Key: Name
+          Value: capstone-private-db-subnet-2
+
+  # ---------------------------------------------------------
+  # Public Route Table
+  # ---------------------------------------------------------
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: capstone-public-route-table
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachInternetGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  # ---------------------------------------------------------
+  # EC2 Security Group
+  # ---------------------------------------------------------
+
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP and SSH access to EC2
+      VpcId: !Ref VPC
+
+      SecurityGroupIngress:
+
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+
+      SecurityGroupEgress:
+
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+      Tags:
+        - Key: Name
+          Value: capstone-ec2-sg
+
+  # ---------------------------------------------------------
+  # RDS Security Group
+  # ---------------------------------------------------------
+
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow PostgreSQL access from EC2
+      VpcId: !Ref VPC
+
+      SecurityGroupIngress:
+
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref EC2SecurityGroup
+
+      SecurityGroupEgress:
+
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+      Tags:
+        - Key: Name
+          Value: capstone-rds-sg
+
+  # ---------------------------------------------------------
+  # IAM Role for EC2
+  # ---------------------------------------------------------
+
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: capstone-ec2-cloudwatch-role
+
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+
+      Tags:
+        - Key: Name
+          Value: capstone-ec2-role
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2Role
+
+  # ---------------------------------------------------------
+  # EC2 Instance
+  # ---------------------------------------------------------
+
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+
+      ImageId: ami-0c02fb55956c7d316
+
+      InstanceType: t2.micro
+
+      KeyName: !Ref KeyPairName
+
+      SubnetId: !Ref PublicSubnet
+
+      SecurityGroupIds:
+        - !Ref EC2SecurityGroup
+
+      IamInstanceProfile: !Ref EC2InstanceProfile
+
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+
+          dnf update -y
+
+          dnf install -y httpd
+
+          systemctl enable httpd
+
+          systemctl start httpd
+
+          echo "<h1>AWS CloudFormation Capstone</h1>" > /var/www/html/index.html
+          echo "<p>Multi-tier application infrastructure is running.</p>" >> /var/www/html/index.html
+          echo "<p>EC2 → RDS PostgreSQL</p>" >> /var/www/html/index.html
+
+      Tags:
+        - Key: Name
+          Value: capstone-application-server
+
+  # ---------------------------------------------------------
+  # RDS Subnet Group
+  # ---------------------------------------------------------
+
+  RDSSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Private subnet group for PostgreSQL
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+
+      Tags:
+        - Key: Name
+          Value: capstone-rds-subnet-group
+
+  # ---------------------------------------------------------
+  # RDS PostgreSQL
+  # ---------------------------------------------------------
+
+  Database:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+
+    Properties:
+
+      DBInstanceIdentifier: capstone-postgres
+
+      Engine: postgres
+
+      DBInstanceClass: db.t3.micro
+
+      AllocatedStorage: 20
+
+      StorageType: gp3
+
+      StorageEncrypted: true
+
+      MasterUsername: !Ref DBUsername
+
+      MasterUserPassword: !Ref DBPassword
+
+      DBName: capstone
+
+      Port: 5432
+
+      PubliclyAccessible: false
+
+      MultiAZ: false
+
+      BackupRetentionPeriod: 7
+
+      DeleteAutomatedBackups: false
+
+      PreferredBackupWindow: "03:00-04:00"
+
+      VPCSecurityGroups:
+        - !Ref RDSSecurityGroup
+
+      DBSubnetGroupName: !Ref RDSSubnetGroup
+
+      Tags:
+        - Key: Name
+          Value: capstone-postgresql
+
+  # ---------------------------------------------------------
+  # CloudWatch Alarm - EC2 CPU
+  # ---------------------------------------------------------
+
+  EC2CPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+
+      AlarmDescription: Alarm when EC2 CPU exceeds 70 percent
+
+      Namespace: AWS/EC2
+
+      MetricName: CPUUtilization
+
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref EC2Instance
+
+      Statistic: Average
+
+      Period: 300
+
+      EvaluationPeriods: 2
+
+      Threshold: 70
+
+      ComparisonOperator: GreaterThanThreshold
+
+      TreatMissingData: notBreaching
+
+# -----------------------------------------------------------
+# Outputs
+# -----------------------------------------------------------
+
+Outputs:
+
+  VPCId:
+    Description: VPC ID
+    Value: !Ref VPC
+
+  EC2InstanceId:
+    Description: EC2 Instance ID
+    Value: !Ref EC2Instance
+
+  EC2PublicIP:
+    Description: Public IP address of EC2
+    Value: !GetAtt EC2Instance.PublicIp
+
+  EC2Website:
+    Description: Website URL
+    Value: !Sub "http://${EC2Instance.PublicDnsName}"
+
+  RDSEndpoint:
+    Description: PostgreSQL RDS endpoint
+    Value: !GetAtt Database.Endpoint.Address
+
+  RDSDatabaseName:
+    Description: Database name
+    Value: capstone
+
+  RDSBackupRetention:
+    Description: RDS automated backup retention
+    Value: "7 days"
