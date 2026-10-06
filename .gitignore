@@ -1,0 +1,40 @@
+# AWS
+.aws/
+
+# CloudFormation
+*.stack
+*.template
+
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+
+# Terraform files - not used directly,
+# but prevent accidental credentials/state
+.terraform/
+*.tfstate
+*.tfstate.*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
